@@ -44,6 +44,62 @@ public class TraceTest {
     );
   }
 
+  /** Some truncate an incoming trace ID to 64-bits. */
+  @Test public void choosesBestTraceId() {
+    List<Span> trace = asList(
+      span("7180c278b62e8f6a216a2aea45d08fc9", null, "a", Kind.SERVER, "frontend", null, false),
+      span("7180c278b62e8f6a216a2aea45d08fc9", "a", "b", Kind.CLIENT, "frontend", null, false),
+      span("216a2aea45d08fc9", "a", "b", Kind.SERVER, "backend", null, true)
+    );
+
+    assertThat(Trace.merge(trace)).flatExtracting(Span::traceId).containsExactly(
+      "7180c278b62e8f6a216a2aea45d08fc9",
+      "7180c278b62e8f6a216a2aea45d08fc9",
+      "7180c278b62e8f6a216a2aea45d08fc9"
+    );
+  }
+
+  /** Let's pretend people use crappy data, but only on the first hop. */
+  @Test public void mergesWhenMissingEndpoints() {
+    List<Span> trace = asList(
+      Span.newBuilder()
+        .traceId("a")
+        .id("a")
+        .putTag("service", "frontend")
+        .putTag("span.kind", "SERVER")
+        .build(),
+      Span.newBuilder()
+        .traceId("a")
+        .parentId("a")
+        .id("b")
+        .putTag("service", "frontend")
+        .putTag("span.kind", "CLIENT")
+        .timestamp(1L)
+        .build(),
+      span("a", "a", "b", Kind.SERVER, "backend", null, true),
+      Span.newBuilder().traceId("a").parentId("a").id("b").duration(10L).build()
+    );
+
+    assertThat(Trace.merge(trace)).usingFieldByFieldElementComparator().containsExactlyInAnyOrder(
+      Span.newBuilder()
+        .traceId("a")
+        .id("a")
+        .putTag("service", "frontend")
+        .putTag("span.kind", "SERVER")
+        .build(),
+      Span.newBuilder()
+        .traceId("a")
+        .parentId("a")
+        .id("b")
+        .putTag("service", "frontend")
+        .putTag("span.kind", "CLIENT")
+        .timestamp(1L)
+        .duration(10L)
+        .build(),
+      span("a", "a", "b", Kind.SERVER, "backend", null, true)
+    );
+  }
+
   /**
    * If a client request is proxied by something that does transparent retried. It can be the case
    * that two servers share the same ID (accidentally!)
@@ -51,12 +107,42 @@ public class TraceTest {
   @Test public void doesntMergeSharedSpansOnDifferentIPs() {
     List<Span> trace = asList(
       span("a", null, "a", Kind.SERVER, "frontend", null, false),
-      span("a", "a", "b", Kind.CLIENT, "frontend", null, false),
+      span("a", "a", "b", Kind.CLIENT, "frontend", null, false).toBuilder()
+        .timestamp(1L).addAnnotation(3L, "brave.flush").build(),
+      span("a", "a", "b", Kind.SERVER, "backend", "1.2.3.4", true),
+      span("a", "a", "b", Kind.SERVER, "backend", "1.2.3.5", true),
+      span("a", "a", "b", Kind.CLIENT, "frontend", null, false).toBuilder()
+        .duration(10L).build()
+    );
+
+    assertThat(Trace.merge(trace)).usingFieldByFieldElementComparator().containsExactlyInAnyOrder(
+      span("a", null, "a", Kind.SERVER, "frontend", null, false),
+      span("a", "a", "b", Kind.CLIENT, "frontend", null, false).toBuilder()
+        .timestamp(1L).duration(10L).addAnnotation(3L, "brave.flush").build(),
       span("a", "a", "b", Kind.SERVER, "backend", "1.2.3.4", true),
       span("a", "a", "b", Kind.SERVER, "backend", "1.2.3.5", true)
     );
+  }
 
-    assertThat(Trace.merge(trace)).isSameAs(trace);
+  @Test public void putsRandomDataOnFirstSpanWithEndpoint() {
+    List<Span> trace = asList(
+      span("a", null, "a", Kind.SERVER, "frontend", null, false),
+      span("a", "a", "b", Kind.CLIENT, null, null, false),
+      span("a", "a", "b", null, "frontend", null, false).toBuilder()
+        .timestamp(1L).addAnnotation(3L, "brave.flush").build(),
+      span("a", "a", "b", Kind.SERVER, "backend", "1.2.3.4", true),
+      span("a", "a", "b", Kind.SERVER, "backend", "1.2.3.5", true),
+      span("a", "a", "b", null, "frontend", null, false).toBuilder()
+        .duration(10L).build()
+    );
+
+    assertThat(Trace.merge(trace)).usingFieldByFieldElementComparator().containsExactlyInAnyOrder(
+      span("a", null, "a", Kind.SERVER, "frontend", null, false),
+      span("a", "a", "b", Kind.CLIENT, "frontend", null, false).toBuilder()
+        .timestamp(1L).duration(10L).addAnnotation(3L, "brave.flush").build(),
+      span("a", "a", "b", Kind.SERVER, "backend", "1.2.3.4", true),
+      span("a", "a", "b", Kind.SERVER, "backend", "1.2.3.5", true)
+    );
   }
 
   @Test public void deletesSelfReferencingParentId() {
@@ -84,7 +170,9 @@ public class TraceTest {
   static Span span(String traceId, @Nullable String parentId, String id, @Nullable Kind kind,
     @Nullable String local, @Nullable String ip, boolean shared) {
     Span.Builder result = Span.newBuilder().traceId(traceId).parentId(parentId).id(id).kind(kind);
-    if (local != null) result.localEndpoint(Endpoint.newBuilder().serviceName(local).ip(ip).build());
+    if (local != null) {
+      result.localEndpoint(Endpoint.newBuilder().serviceName(local).ip(ip).build());
+    }
     return result.shared(shared).build();
   }
 }
