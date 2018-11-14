@@ -346,6 +346,30 @@ public final class Span implements Serializable { // for Spark and Flink jobs
       flags = source.flags;
     }
 
+    public Builder merge(Span source) {
+      if (parentId == null && source.parentId != null) {
+        if (!source.parentId.equals(id)) parentId = source.parentId;
+      }
+      if (kind == null) kind = source.kind;
+      if (name == null) name = source.name;
+      if (timestamp == 0L) timestamp = source.timestamp;
+      if (duration == 0L) duration = source.duration;
+      // TODO merge endpoints
+      if (localEndpoint == null) localEndpoint = source.localEndpoint;
+      if (remoteEndpoint == null) remoteEndpoint = source.remoteEndpoint;
+      if (!source.annotations.isEmpty()) {
+        if (annotations == null) {
+          annotations = new ArrayList<>(source.annotations.size());
+        }
+        annotations.addAll(source.annotations);
+      }
+      if (!source.tags.isEmpty()) {
+        tags.putAll(source.tags);
+      }
+      flags = flags | source.flags;
+      return this;
+    }
+
     @Nullable public Kind kind() {
       return kind;
     }
@@ -379,7 +403,7 @@ public final class Span implements Serializable { // for Spark and Flink jobs
         pos += 16;
       }
       writeHexLong(result, pos, low);
-      this.traceId =  new String(result);
+      this.traceId = new String(result);
       return this;
     }
 
